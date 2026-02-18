@@ -6,16 +6,20 @@ const crypto = require("crypto");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get("/", (req, res) => res.send("PwnSeek System Online"));
+app.get("/", (req, res) => res.send("PwnSeek Online"));
+app.listen(PORT, () => console.log(`Web server running on ${PORT}`));
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
-// ===== MongoDB =====
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB connecté"))
-  .catch(err => console.error("MongoDB erreur:", err));
+// ===== Mongo =====
+async function start() {
+  try {
+    await mongoose.connect(process.env.MONGO_URI);
+    console.log("MongoDB connecté");
+    await client.login(process.env.TOKEN);
+    console.log("Bot connecté");
+  } catch (err) {
+    console.error("Erreur démarrage:", err);
+  }
+}
 
 // ===== Schema =====
 const licenseSchema = new mongoose.Schema({
@@ -25,14 +29,10 @@ const licenseSchema = new mongoose.Schema({
   generatedBy: String,
   redeemedBy: String
 });
-
 const License = mongoose.model("License", licenseSchema);
 
-// ===== Discord Bot =====
-const TOKEN = process.env.TOKEN;
+// ===== Discord =====
 const MAIN_OWNER_ID = "1116824300247339131";
-const LOG_CHANNEL_ID = "1473501966377422930";
-
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -41,28 +41,13 @@ const client = new Client({
   ]
 });
 
-console.log("Bot démarre...");
-
-client.once("ready", () => {
-  console.log(`Connecté en tant que ${client.user.tag}`);
-});
-
 // ===== Helpers =====
-
-function embedSuccess(title, description) {
+function embed(color, title, desc) {
   return new EmbedBuilder()
-    .setColor("#2b2d31")
+    .setColor(color)
     .setTitle(title)
-    .setDescription(description)
+    .setDescription(desc)
     .setFooter({ text: "PwnSeek Licensing System" })
-    .setTimestamp();
-}
-
-function embedError(description) {
-  return new EmbedBuilder()
-    .setColor("#ff0000")
-    .setTitle("Erreur")
-    .setDescription(description)
     .setTimestamp();
 }
 
@@ -72,63 +57,47 @@ function generateKey() {
 
 function getExpiration(plan) {
   const now = Date.now();
-  if (plan === "1_week") return now + 7 * 24 * 60 * 60 * 1000;
-  if (plan === "1_month") return now + 30 * 24 * 60 * 60 * 1000;
-  if (plan === "1_year") return now + 365 * 24 * 60 * 60 * 1000;
+  if (plan === "1sem") return now + 7 * 24 * 60 * 60 * 1000;
+  if (plan === "1mois") return now + 30 * 24 * 60 * 60 * 1000;
+  if (plan === "1ans") return now + 365 * 24 * 60 * 60 * 1000;
   if (plan === "lifetime") return null;
+  return null;
 }
 
-function sendLog(content) {
-  const channel = client.channels.cache.get(LOG_CHANNEL_ID);
-  if (!channel) return;
-  channel.send({ embeds: [embedSuccess("Log", content)] });
-}
-
-// ===== Cooldown simple =====
-const cooldown = new Set();
-
-// ===== Command Handler =====
+// ===== Commands =====
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   const args = message.content.trim().split(/\s+/);
   const cmd = args[0]?.toLowerCase();
 
-  if (cooldown.has(message.author.id)) return;
-  cooldown.add(message.author.id);
-  setTimeout(() => cooldown.delete(message.author.id), 2000);
-
   // ===== HELP =====
   if (cmd === "!help") {
-    const embed = new EmbedBuilder()
-      .setColor("#2b2d31")
-      .setTitle("PwnSeek - Commandes")
-      .addFields(
-        { name: "!gen 1 semaine | 1 mois | 1 ans | lifetime", value: "Générer une licence (Owner uniquement)" },
-        { name: "!redeem <key>", value: "Activer une licence" },
-        { name: "!check <key>", value: "Vérifier une licence" },
-        { name: "!list", value: "Voir toutes les licences (Owner)" },
-        { name: "!disable <key>", value: "Supprimer une licence (Owner)" }
-      )
-      .setFooter({ text: "PwnSeek Professional System" })
-      .setTimestamp();
+    if (args[1] === "key") {
+      return message.reply({
+        embeds: [
+          embed("#2b2d31", "Gestion des clés",
+            "`!gen <plan>`\n`!redeem <key>`\n`!check <key>`\n`!disable <key>`\n`!list`")
+        ]
+      });
+    }
 
-    return message.reply({ embeds: [embed] });
+    return message.reply({
+      embeds: [
+        embed("#2b2d31", "Commandes disponibles",
+          "`!gen 1sem`\n`!gen 1mois`\n`!gen 1ans`\n`!gen lifetime`\n`!redeem`\n`!check`\n`!disable`\n`!list`\n`!vouch`")
+      ]
+    });
   }
 
-  // ===== GENERATE =====
+  // ===== GEN =====
   if (cmd === "!gen") {
     if (message.author.id !== MAIN_OWNER_ID)
-      return message.reply({ embeds: [embedError("Permission refusée.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Permission refusée")] });
 
-    let plan;
-    if (args[1] === "1" && args[2] === "semaine") plan = "1_week";
-    if (args[1] === "1" && args[2] === "mois") plan = "1_month";
-    if (args[1] === "1" && args[2] === "ans") plan = "1_year";
-    if (args[1] === "lifetime") plan = "lifetime";
-
-    if (!plan)
-      return message.reply({ embeds: [embedError("Plan invalide.")] });
+    const plan = args[1];
+    if (!["1sem", "1mois", "1ans", "lifetime"].includes(plan))
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Plan invalide")] });
 
     const key = generateKey();
     const expiresAt = getExpiration(plan);
@@ -141,14 +110,10 @@ client.on("messageCreate", async (message) => {
       redeemedBy: null
     });
 
-    sendLog(`Nouvelle licence générée\nClé: ${key}\nPlan: ${plan}`);
-
     return message.reply({
       embeds: [
-        embedSuccess(
-          "Licence générée",
-          `Clé: \`${key}\`\nPlan: ${plan}\nStatut: Non activée`
-        )
+        embed("#00ff99", "Licence générée",
+          `Clé : \`${key}\`\nPlan : ${plan}\nStatut : Non utilisée`)
       ]
     });
   }
@@ -157,25 +122,23 @@ client.on("messageCreate", async (message) => {
   if (cmd === "!redeem") {
     const key = args[1];
     if (!key)
-      return message.reply({ embeds: [embedError("Veuillez fournir une clé.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Veuillez fournir une clé")] });
 
     const license = await License.findOne({ key });
     if (!license)
-      return message.reply({ embeds: [embedError("Clé invalide.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Clé invalide")] });
 
     if (license.redeemedBy)
-      return message.reply({ embeds: [embedError("Clé déjà utilisée.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Clé déjà utilisée")] });
 
     if (license.expiresAt && Date.now() > license.expiresAt)
-      return message.reply({ embeds: [embedError("Clé expirée.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Clé expirée")] });
 
     license.redeemedBy = message.author.tag;
     await license.save();
 
     return message.reply({
-      embeds: [
-        embedSuccess("Activation réussie", "Votre licence est maintenant active.")
-      ]
+      embeds: [embed("#00ff99", "Activation réussie", "Votre licence est active")]
     });
   }
 
@@ -183,57 +146,61 @@ client.on("messageCreate", async (message) => {
   if (cmd === "!check") {
     const key = args[1];
     if (!key)
-      return message.reply({ embeds: [embedError("Veuillez fournir une clé.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Veuillez fournir une clé")] });
 
     const license = await License.findOne({ key });
     if (!license)
-      return message.reply({ embeds: [embedError("Clé invalide.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Clé invalide")] });
 
     return message.reply({
       embeds: [
-        embedSuccess(
-          "Informations licence",
-          `Clé: \`${license.key}\`\nPlan: ${license.plan}\nGénérée par: ${license.generatedBy}\nRedeem: ${license.redeemedBy || "Non utilisée"}`
-        )
+        embed("#2b2d31", "Informations licence",
+          `Clé : \`${license.key}\`\nPlan : ${license.plan}\nRedeem : ${license.redeemedBy || "Non utilisée"}`)
       ]
-    });
-  }
-
-  // ===== LIST =====
-  if (cmd === "!list") {
-    if (message.author.id !== MAIN_OWNER_ID)
-      return message.reply({ embeds: [embedError("Permission refusée.")] });
-
-    const licenses = await License.find();
-    if (!licenses.length)
-      return message.reply({ embeds: [embedError("Aucune licence active.")] });
-
-    let content = "";
-    licenses.forEach(l => {
-      content += `\`${l.key}\` | ${l.plan} | ${l.redeemedBy || "Non utilisée"}\n`;
-    });
-
-    return message.reply({
-      embeds: [embedSuccess("Licences actives", content)]
     });
   }
 
   // ===== DISABLE =====
   if (cmd === "!disable") {
     if (message.author.id !== MAIN_OWNER_ID)
-      return message.reply({ embeds: [embedError("Permission refusée.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Permission refusée")] });
 
     const key = args[1];
     if (!key)
-      return message.reply({ embeds: [embedError("Veuillez fournir une clé.")] });
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Veuillez fournir une clé")] });
 
     await License.deleteOne({ key });
 
     return message.reply({
-      embeds: [embedSuccess("Licence supprimée", `Clé: \`${key}\` supprimée.`)]
+      embeds: [embed("#ffaa00", "Licence supprimée", `Clé : \`${key}\` supprimée`)]
+    });
+  }
+
+  // ===== LIST =====
+  if (cmd === "!list") {
+    if (message.author.id !== MAIN_OWNER_ID)
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Permission refusée")] });
+
+    const licenses = await License.find();
+    if (!licenses.length)
+      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Aucune licence")] });
+
+    let text = licenses.map(l =>
+      `\`${l.key}\` | ${l.plan} | ${l.redeemedBy || "Non utilisée"}`
+    ).join("\n");
+
+    return message.reply({
+      embeds: [embed("#2b2d31", "Licences actives", text)]
+    });
+  }
+
+  // ===== VOUCH =====
+  if (cmd === "!vouch") {
+    return message.reply({
+      embeds: [embed("#00ff99", "Merci pour votre confiance", "Votre avis compte énormément ❤️")]
     });
   }
 
 });
 
-client.login(TOKEN);
+start();
