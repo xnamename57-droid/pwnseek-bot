@@ -1,6 +1,20 @@
+const express = require("express");
 const { Client, GatewayIntentBits } = require("discord.js");
 const crypto = require("crypto");
 
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// ===== Mini serveur pour Render =====
+app.get("/", (req, res) => {
+  res.send("Bot is running");
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// ===== Discord Bot =====
 const TOKEN = process.env.TOKEN;
 const MAIN_OWNER_ID = "1116824300247339131";
 const LOG_CHANNEL_ID = "1473501966377422930";
@@ -50,7 +64,7 @@ client.on("messageCreate", async (message) => {
   const args = message.content.trim().split(/\s+/);
   const cmd = args[0]?.toLowerCase();
 
-  // ===== ADD OWNER =====
+  // ===== OWNER =====
   if (cmd === "!owner") {
     if (message.author.id !== MAIN_OWNER_ID)
       return message.reply("Pas autorisé");
@@ -67,7 +81,6 @@ client.on("messageCreate", async (message) => {
     if (!isOwner(message.author.id)) return;
 
     let plan;
-
     if (args[1] === "1" && args[2] === "semaine") plan = "1_week";
     if (args[1] === "1" && args[2] === "mois") plan = "1_month";
     if (args[1] === "1" && args[2] === "ans") plan = "1_year";
@@ -183,7 +196,6 @@ Supprimée par: ${message.author.tag}`
 
     return message.reply(`Key supprimée: ${key}`);
   }
-
 });
 
 client.login(TOKEN);
