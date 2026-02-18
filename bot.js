@@ -1,27 +1,29 @@
 const express = require("express");
+const session = require("express-session");
 const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 
+// ================== CONFIG ==================
+const MAIN_OWNER_ID = "1116824300247339131";
+
+// ================== EXPRESS ==================
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get("/", (req, res) => res.send("PwnSeek Bot Online"));
-app.listen(PORT, () => console.log("Web server running on " + PORT));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
-console.log("Script lancé");
+app.use(session({
+  secret: "pwnseek_secret",
+  resave: false,
+  saveUninitialized: false
+}));
 
-// ================= MONGO =================
-
-async function connectMongo() {
-  try {
-    console.log("Connexion Mongo...");
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log("MongoDB connecté");
-  } catch (err) {
-    console.error("Erreur MongoDB:", err);
-  }
-}
+// ================== MONGO ==================
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("MongoDB connecté"))
+  .catch(err => console.error("Mongo erreur:", err));
 
 const licenseSchema = new mongoose.Schema({
   key: String,
@@ -33,7 +35,109 @@ const licenseSchema = new mongoose.Schema({
 
 const License = mongoose.model("License", licenseSchema);
 
-// ================= DISCORD =================
+// ================== AUTH MIDDLEWARE ==================
+function isAuth(req, res, next) {
+  if (req.session.logged) return next();
+  res.redirect("/login");
+}
+
+// ================== PANEL ROUTES ==================
+
+app.get("/login", (req, res) => {
+  res.send(`
+    <h2>PwnSeek Admin Login</h2>
+    <form method="POST">
+      <input type="password" name="password" placeholder="Password"/>
+      <button>Login</button>
+    </form>
+  `);
+});
+
+app.post("/login", (req, res) => {
+  if (req.body.password === process.env.ADMIN_PASSWORD) {
+    req.session.logged = true;
+    return res.redirect("/panel");
+  }
+  res.send("Mot de passe incorrect");
+});
+
+app.get("/panel", isAuth, async (req, res) => {
+  const licenses = await License.find();
+
+  let list = licenses.map(l => `
+    <tr>
+      <td>${l.key}</td>
+      <td>${l.plan}</td>
+      <td>${l.redeemedBy || "Non utilisée"}</td>
+      <td>
+        <form method="POST" action="/delete">
+          <input type="hidden" name="key" value="${l.key}"/>
+          <button>Supprimer</button>
+        </form>
+      </td>
+    </tr>
+  `).join("");
+
+  res.send(`
+    <h1>PwnSeek Panel</h1>
+    <h3>Générer licence</h3>
+    <form method="POST" action="/generate">
+      <select name="plan">
+        <option value="1sem">1 semaine</option>
+        <option value="1mois">1 mois</option>
+        <option value="1ans">1 an</option>
+        <option value="lifetime">Lifetime</option>
+      </select>
+      <button>Générer</button>
+    </form>
+
+    <h3>Licences</h3>
+    <table border="1">
+      <tr>
+        <th>Key</th>
+        <th>Plan</th>
+        <th>Status</th>
+        <th>Action</th>
+      </tr>
+      ${list}
+    </table>
+  `);
+});
+
+app.post("/generate", isAuth, async (req, res) => {
+  const plan = req.body.plan;
+
+  function getExpiration(plan) {
+    const now = Date.now();
+    if (plan === "1sem") return now + 7 * 24 * 60 * 60 * 1000;
+    if (plan === "1mois") return now + 30 * 24 * 60 * 60 * 1000;
+    if (plan === "1ans") return now + 365 * 24 * 60 * 60 * 1000;
+    if (plan === "lifetime") return null;
+  }
+
+  const key = "pwn_" + crypto.randomBytes(8).toString("hex");
+
+  await License.create({
+    key,
+    plan,
+    expiresAt: getExpiration(plan),
+    generatedBy: "Panel",
+    redeemedBy: null
+  });
+
+  res.redirect("/panel");
+});
+
+app.post("/delete", isAuth, async (req, res) => {
+  await License.deleteOne({ key: req.body.key });
+  res.redirect("/panel");
+});
+
+app.listen(PORT, () => {
+  console.log("Panel running on port " + PORT);
+});
+
+// ================== DISCORD BOT ==================
 
 const client = new Client({
   intents: [
@@ -43,37 +147,17 @@ const client = new Client({
   ]
 });
 
-const MAIN_OWNER_ID = "1116824300247339131";
-
 client.once("ready", () => {
   console.log("Bot connecté en tant que " + client.user.tag);
 });
-
-// ================= HELPERS =================
 
 function embed(color, title, description) {
   return new EmbedBuilder()
     .setColor(color)
     .setTitle(title)
     .setDescription(description)
-    .setFooter({ text: "PwnSeek Licensing System" })
     .setTimestamp();
 }
-
-function generateKey() {
-  return "pwn_" + crypto.randomBytes(8).toString("hex");
-}
-
-function getExpiration(plan) {
-  const now = Date.now();
-  if (plan === "1sem") return now + 7 * 24 * 60 * 60 * 1000;
-  if (plan === "1mois") return now + 30 * 24 * 60 * 60 * 1000;
-  if (plan === "1ans") return now + 365 * 24 * 60 * 60 * 1000;
-  if (plan === "lifetime") return null;
-  return null;
-}
-
-// ================= COMMANDES =================
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -81,137 +165,21 @@ client.on("messageCreate", async (message) => {
   const args = message.content.trim().split(/\s+/);
   const cmd = args[0]?.toLowerCase();
 
-  // HELP
-  if (cmd === "!help") {
-    return message.reply({
-      embeds: [
-        embed(
-          "#2b2d31",
-          "Commandes",
-          "`!gen 1sem`\n`!gen 1mois`\n`!gen 1ans`\n`!gen lifetime`\n`!redeem <key>`\n`!check <key>`\n`!disable <key>`\n`!list`\n`!vouch`"
-        )
-      ]
-    });
-  }
-
-  // GEN
-  if (cmd === "!gen") {
-    if (message.author.id !== MAIN_OWNER_ID)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Permission refusée")] });
-
-    const plan = args[1];
-    if (!["1sem", "1mois", "1ans", "lifetime"].includes(plan))
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Plan invalide")] });
-
-    const key = generateKey();
-    const expiresAt = getExpiration(plan);
-
-    await License.create({
-      key,
-      plan,
-      expiresAt,
-      generatedBy: message.author.tag,
-      redeemedBy: null
-    });
-
-    return message.reply({
-      embeds: [
-        embed("#00ff99", "Licence générée",
-          `Clé : \`${key}\`\nPlan : ${plan}\nStatut : Non utilisée`)
-      ]
-    });
-  }
-
-  // REDEEM
   if (cmd === "!redeem") {
     const key = args[1];
-    if (!key)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Veuillez fournir une clé")] });
-
     const license = await License.findOne({ key });
+
     if (!license)
       return message.reply({ embeds: [embed("#ff0000", "Erreur", "Clé invalide")] });
 
     if (license.redeemedBy)
       return message.reply({ embeds: [embed("#ff0000", "Erreur", "Clé déjà utilisée")] });
 
-    if (license.expiresAt && Date.now() > license.expiresAt)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Clé expirée")] });
-
     license.redeemedBy = message.author.tag;
     await license.save();
 
-    return message.reply({
-      embeds: [embed("#00ff99", "Activation réussie", "Licence activée")]
-    });
+    return message.reply({ embeds: [embed("#00ff99", "Succès", "Licence activée")] });
   }
-
-  // CHECK
-  if (cmd === "!check") {
-    const key = args[1];
-    if (!key)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Veuillez fournir une clé")] });
-
-    const license = await License.findOne({ key });
-    if (!license)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Clé invalide")] });
-
-    return message.reply({
-      embeds: [
-        embed("#2b2d31", "Informations licence",
-          `Clé : \`${license.key}\`\nPlan : ${license.plan}\nRedeem : ${license.redeemedBy || "Non utilisée"}`)
-      ]
-    });
-  }
-
-  // LIST
-  if (cmd === "!list") {
-    if (message.author.id !== MAIN_OWNER_ID)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Permission refusée")] });
-
-    const licenses = await License.find();
-    if (!licenses.length)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Aucune licence")] });
-
-    const text = licenses.map(l =>
-      `\`${l.key}\` | ${l.plan} | ${l.redeemedBy || "Non utilisée"}`
-    ).join("\n");
-
-    return message.reply({
-      embeds: [embed("#2b2d31", "Licences actives", text)]
-    });
-  }
-
-  // DISABLE
-  if (cmd === "!disable") {
-    if (message.author.id !== MAIN_OWNER_ID)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Permission refusée")] });
-
-    const key = args[1];
-    if (!key)
-      return message.reply({ embeds: [embed("#ff0000", "Erreur", "Veuillez fournir une clé")] });
-
-    await License.deleteOne({ key });
-
-    return message.reply({
-      embeds: [embed("#ffaa00", "Licence supprimée", `Clé : \`${key}\` supprimée`)]
-    });
-  }
-
-  // VOUCH
-  if (cmd === "!vouch") {
-    return message.reply({
-      embeds: [embed("#00ff99", "Merci", "Votre avis compte ❤️")]
-    });
-  }
-
 });
 
-// ================= START =================
-
-async function start() {
-  await connectMongo();
-  await client.login(process.env.TOKEN);
-}
-
-start();
+client.login(process.env.TOKEN);
