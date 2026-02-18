@@ -15,7 +15,7 @@ app.listen(PORT, () => {
 });
 
 // ===== Discord Bot =====
-const TOKEN = process.env.TOKEN;
+console.log("TOKEN VALUE:", process.env.TOKEN);
 const MAIN_OWNER_ID = "1116824300247339131";
 const LOG_CHANNEL_ID = "1473501966377422930";
 
@@ -199,3 +199,4 @@ Supprimée par: ${message.author.tag}`
 });
 
 client.login(TOKEN);
+
