@@ -1,21 +1,35 @@
 const express = require("express");
-const { Client, GatewayIntentBits } = require("discord.js");
+const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
+const mongoose = require("mongoose");
 const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== Mini serveur pour Render =====
-app.get("/", (req, res) => {
-  res.send("Bot is running");
-});
+app.get("/", (req, res) => res.send("PwnSeek System Online"));
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
+// ===== MongoDB =====
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("MongoDB connecté"))
+  .catch(err => console.error("MongoDB erreur:", err));
+
+// ===== Schema =====
+const licenseSchema = new mongoose.Schema({
+  key: String,
+  plan: String,
+  expiresAt: Number,
+  generatedBy: String,
+  redeemedBy: String
+});
+
+const License = mongoose.model("License", licenseSchema);
+
 // ===== Discord Bot =====
-console.log("TOKEN VALUE:", process.env.TOKEN);
+const TOKEN = process.env.TOKEN;
 const MAIN_OWNER_ID = "1116824300247339131";
 const LOG_CHANNEL_ID = "1473501966377422930";
 
@@ -33,14 +47,24 @@ client.once("ready", () => {
   console.log(`Connecté en tant que ${client.user.tag}`);
 });
 
-function sendLog(content) {
-  const channel = client.channels.cache.get(LOG_CHANNEL_ID);
-  if (!channel) return;
-  channel.send(content);
+// ===== Helpers =====
+
+function embedSuccess(title, description) {
+  return new EmbedBuilder()
+    .setColor("#2b2d31")
+    .setTitle(title)
+    .setDescription(description)
+    .setFooter({ text: "PwnSeek Licensing System" })
+    .setTimestamp();
 }
 
-let owners = new Set();
-let licenses = [];
+function embedError(description) {
+  return new EmbedBuilder()
+    .setColor("#ff0000")
+    .setTitle("Erreur")
+    .setDescription(description)
+    .setTimestamp();
+}
 
 function generateKey() {
   return "pwn_" + crypto.randomBytes(8).toString("hex");
@@ -54,31 +78,48 @@ function getExpiration(plan) {
   if (plan === "lifetime") return null;
 }
 
-function isOwner(id) {
-  return id === MAIN_OWNER_ID || owners.has(id);
+function sendLog(content) {
+  const channel = client.channels.cache.get(LOG_CHANNEL_ID);
+  if (!channel) return;
+  channel.send({ embeds: [embedSuccess("Log", content)] });
 }
 
+// ===== Cooldown simple =====
+const cooldown = new Set();
+
+// ===== Command Handler =====
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   const args = message.content.trim().split(/\s+/);
   const cmd = args[0]?.toLowerCase();
 
-  // ===== OWNER =====
-  if (cmd === "!owner") {
-    if (message.author.id !== MAIN_OWNER_ID)
-      return message.reply("Pas autorisé");
+  if (cooldown.has(message.author.id)) return;
+  cooldown.add(message.author.id);
+  setTimeout(() => cooldown.delete(message.author.id), 2000);
 
-    const user = message.mentions.users.first();
-    if (!user) return message.reply("Mentionne un utilisateur");
+  // ===== HELP =====
+  if (cmd === "!help") {
+    const embed = new EmbedBuilder()
+      .setColor("#2b2d31")
+      .setTitle("PwnSeek - Commandes")
+      .addFields(
+        { name: "!gen 1 semaine | 1 mois | 1 ans | lifetime", value: "Générer une licence (Owner uniquement)" },
+        { name: "!redeem <key>", value: "Activer une licence" },
+        { name: "!check <key>", value: "Vérifier une licence" },
+        { name: "!list", value: "Voir toutes les licences (Owner)" },
+        { name: "!disable <key>", value: "Supprimer une licence (Owner)" }
+      )
+      .setFooter({ text: "PwnSeek Professional System" })
+      .setTimestamp();
 
-    owners.add(user.id);
-    return message.reply("Owner ajouté");
+    return message.reply({ embeds: [embed] });
   }
 
   // ===== GENERATE =====
   if (cmd === "!gen") {
-    if (!isOwner(message.author.id)) return;
+    if (message.author.id !== MAIN_OWNER_ID)
+      return message.reply({ embeds: [embedError("Permission refusée.")] });
 
     let plan;
     if (args[1] === "1" && args[2] === "semaine") plan = "1_week";
@@ -86,12 +127,13 @@ client.on("messageCreate", async (message) => {
     if (args[1] === "1" && args[2] === "ans") plan = "1_year";
     if (args[1] === "lifetime") plan = "lifetime";
 
-    if (!plan) return message.reply("Plan invalide");
+    if (!plan)
+      return message.reply({ embeds: [embedError("Plan invalide.")] });
 
     const key = generateKey();
     const expiresAt = getExpiration(plan);
 
-    licenses.push({
+    await License.create({
       key,
       plan,
       expiresAt,
@@ -99,104 +141,99 @@ client.on("messageCreate", async (message) => {
       redeemedBy: null
     });
 
-    sendLog(
-`GEN
-Key: ${key}
-Plan: ${plan}
-Gen par: ${message.author.tag}`
-    );
+    sendLog(`Nouvelle licence générée\nClé: ${key}\nPlan: ${plan}`);
 
-    return message.reply(
-`Key générée: ${key}
-
-Merci d'avoir payer sur PwnSeek`
-    );
+    return message.reply({
+      embeds: [
+        embedSuccess(
+          "Licence générée",
+          `Clé: \`${key}\`\nPlan: ${plan}\nStatut: Non activée`
+        )
+      ]
+    });
   }
 
   // ===== REDEEM =====
   if (cmd === "!redeem") {
     const key = args[1];
-    if (!key) return message.reply("Donne une key");
+    if (!key)
+      return message.reply({ embeds: [embedError("Veuillez fournir une clé.")] });
 
-    const license = licenses.find(l => l.key === key);
-    if (!license) return message.reply("Key invalide");
+    const license = await License.findOne({ key });
+    if (!license)
+      return message.reply({ embeds: [embedError("Clé invalide.")] });
 
     if (license.redeemedBy)
-      return message.reply("Key déjà utilisée");
+      return message.reply({ embeds: [embedError("Clé déjà utilisée.")] });
 
     if (license.expiresAt && Date.now() > license.expiresAt)
-      return message.reply("Key expirée");
+      return message.reply({ embeds: [embedError("Clé expirée.")] });
 
     license.redeemedBy = message.author.tag;
+    await license.save();
 
-    sendLog(
-`REDEEM
-Key: ${key}
-Redeem par: ${message.author.tag}`
-    );
-
-    return message.reply("Key activée");
+    return message.reply({
+      embeds: [
+        embedSuccess("Activation réussie", "Votre licence est maintenant active.")
+      ]
+    });
   }
 
   // ===== CHECK =====
   if (cmd === "!check") {
     const key = args[1];
-    if (!key) return message.reply("Donne une key");
+    if (!key)
+      return message.reply({ embeds: [embedError("Veuillez fournir une clé.")] });
 
-    const license = licenses.find(l => l.key === key);
-    if (!license) return message.reply("Key invalide");
+    const license = await License.findOne({ key });
+    if (!license)
+      return message.reply({ embeds: [embedError("Clé invalide.")] });
 
-    if (license.expiresAt && Date.now() > license.expiresAt)
-      return message.reply("Key expirée");
-
-    return message.reply(
-`Valide
-Plan: ${license.plan}
-Générée par: ${license.generatedBy}
-Redeem par: ${license.redeemedBy || "Non utilisée"}`
-    );
+    return message.reply({
+      embeds: [
+        embedSuccess(
+          "Informations licence",
+          `Clé: \`${license.key}\`\nPlan: ${license.plan}\nGénérée par: ${license.generatedBy}\nRedeem: ${license.redeemedBy || "Non utilisée"}`
+        )
+      ]
+    });
   }
 
   // ===== LIST =====
   if (cmd === "!list") {
-    if (!isOwner(message.author.id)) return;
+    if (message.author.id !== MAIN_OWNER_ID)
+      return message.reply({ embeds: [embedError("Permission refusée.")] });
 
-    if (licenses.length === 0)
-      return message.reply("Aucune key active");
+    const licenses = await License.find();
+    if (!licenses.length)
+      return message.reply({ embeds: [embedError("Aucune licence active.")] });
 
-    let msg = "Keys actives:\n\n";
-
+    let content = "";
     licenses.forEach(l => {
-      msg += `Key: ${l.key}\n`;
-      msg += `Plan: ${l.plan}\n`;
-      msg += `Gen par: ${l.generatedBy}\n`;
-      msg += `Redeem: ${l.redeemedBy || "Non utilisée"}\n\n`;
+      content += `\`${l.key}\` | ${l.plan} | ${l.redeemedBy || "Non utilisée"}\n`;
     });
 
-    return message.reply(msg);
+    return message.reply({
+      embeds: [embedSuccess("Licences actives", content)]
+    });
   }
 
   // ===== DISABLE =====
   if (cmd === "!disable") {
-    if (!isOwner(message.author.id)) return;
+    if (message.author.id !== MAIN_OWNER_ID)
+      return message.reply({ embeds: [embedError("Permission refusée.")] });
 
     const key = args[1];
-    if (!key) return message.reply("Donne une key");
+    if (!key)
+      return message.reply({ embeds: [embedError("Veuillez fournir une clé.")] });
 
-    const index = licenses.findIndex(l => l.key === key);
-    if (index === -1) return message.reply("Key invalide");
+    await License.deleteOne({ key });
 
-    licenses.splice(index, 1);
-
-    sendLog(
-`DELETE
-Key: ${key}
-Supprimée par: ${message.author.tag}`
-    );
-
-    return message.reply(`Key supprimée: ${key}`);
+    return message.reply({
+      embeds: [embedSuccess("Licence supprimée", `Clé: \`${key}\` supprimée.`)]
+    });
   }
+
 });
 
 client.login(TOKEN);
-
