@@ -4,10 +4,10 @@ const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 
-// ================== CONFIG ==================
+// ================= CONFIG =================
 const MAIN_OWNER_ID = "1116824300247339131";
 
-// ================== EXPRESS ==================
+// ================= EXPRESS =================
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -15,15 +15,15 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 app.use(session({
-  secret: "pwnseek_secret",
+  secret: "pwnseek_secret_key",
   resave: false,
   saveUninitialized: false
 }));
 
-// ================== MONGO ==================
+// ================= MONGO =================
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connecté"))
-  .catch(err => console.error("Mongo erreur:", err));
+  .catch(err => console.error("MongoDB erreur:", err));
 
 const licenseSchema = new mongoose.Schema({
   key: String,
@@ -35,14 +35,13 @@ const licenseSchema = new mongoose.Schema({
 
 const License = mongoose.model("License", licenseSchema);
 
-// ================== AUTH MIDDLEWARE ==================
+// ================= AUTH =================
 function isAuth(req, res, next) {
   if (req.session.logged) return next();
   res.redirect("/login");
 }
 
-// ================== PANEL ROUTES ==================
-
+// ================= LOGIN =================
 app.get("/login", (req, res) => {
   res.send(`
     <h2>PwnSeek Admin Login</h2>
@@ -61,10 +60,11 @@ app.post("/login", (req, res) => {
   res.send("Mot de passe incorrect");
 });
 
+// ================= PANEL =================
 app.get("/panel", isAuth, async (req, res) => {
   const licenses = await License.find();
 
-  let list = licenses.map(l => `
+  const rows = licenses.map(l => `
     <tr>
       <td>${l.key}</td>
       <td>${l.plan}</td>
@@ -79,8 +79,9 @@ app.get("/panel", isAuth, async (req, res) => {
   `).join("");
 
   res.send(`
-    <h1>PwnSeek Panel</h1>
-    <h3>Générer licence</h3>
+    <h1>PwnSeek Admin Panel</h1>
+
+    <h3>Générer une licence</h3>
     <form method="POST" action="/generate">
       <select name="plan">
         <option value="1sem">1 semaine</option>
@@ -99,13 +100,12 @@ app.get("/panel", isAuth, async (req, res) => {
         <th>Status</th>
         <th>Action</th>
       </tr>
-      ${list}
+      ${rows}
     </table>
   `);
 });
 
 app.post("/generate", isAuth, async (req, res) => {
-  const plan = req.body.plan;
 
   function getExpiration(plan) {
     const now = Date.now();
@@ -119,8 +119,8 @@ app.post("/generate", isAuth, async (req, res) => {
 
   await License.create({
     key,
-    plan,
-    expiresAt: getExpiration(plan),
+    plan: req.body.plan,
+    expiresAt: getExpiration(req.body.plan),
     generatedBy: "Panel",
     redeemedBy: null
   });
@@ -134,11 +134,10 @@ app.post("/delete", isAuth, async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("Panel running on port " + PORT);
+  console.log("Panel web lancé sur port " + PORT);
 });
 
-// ================== DISCORD BOT ==================
-
+// ================= DISCORD BOT =================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -165,8 +164,10 @@ client.on("messageCreate", async (message) => {
   const args = message.content.trim().split(/\s+/);
   const cmd = args[0]?.toLowerCase();
 
+  // ===== REDEEM =====
   if (cmd === "!redeem") {
     const key = args[1];
+
     const license = await License.findOne({ key });
 
     if (!license)
